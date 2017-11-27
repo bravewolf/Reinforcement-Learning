@@ -16,17 +16,25 @@ class CNN(object):
     def __init__(self, actionNumber):
         self._actionNumber = actionNumber
 
-    def actionValue_Q(self, state):
+    def actionValue_Q(self, state, reuse):
 
         with slim.arg_scope([slim.fully_connected],
-                            reuse=tf.AUTO_REUSE,
+                            reuse=reuse,
                             activation_fn = tf.nn.tanh,
                             weights_regularizer = slim.l2_regularizer(0.001)):
-            _network = slim.fully_connected(state, 5, scope="layer1")
-            _network = slim.fully_connected(_network, 5, scope="layer2")
-            # _network = slim.fully_connected(_network, 20, scope="layer3")
-            _network = slim.fully_connected(_network, self._actionNumber, activation_fn=None, scope = "actionValue")
-            return _network
+            # _network = slim.fully_connected(state, 5, scope="layer1")
+            # _network = slim.fully_connected(_network, 5, scope="layer2")
+            # # _network = slim.fully_connected(_network, 20, scope="layer3")
+            # _network = slim.fully_connected(_network, self._actionNumber, activation_fn=None, scope = "actionValue")
+            # return _network
+            net = slim.fully_connected(state, 48, scope='fc1')
+            net = slim.fully_connected(net, 32, scope='fc2')
+            net = slim.fully_connected(net, 32, scope='fc3')
+            # Bottleneck layer.
+            net = slim.fully_connected(net, 24, scope='fc4')
+            net = slim.fully_connected(net, 48, scope='fc5')
+            net = slim.fully_connected(net, self._actionNumber, activation_fn=None, scope='fc_logits')
+            return net
 
 
 class replayMemory_D(object):
@@ -53,12 +61,12 @@ class agent_Enviroment(object):
         self._actionNumber = actionNumber
         self._stateDimension = stateDimension
         self._miniBatchSize = miniBatchSize
-
+        self._model2 = CNN(actionNumber)
         #variable to compute loss
         self._states = tf.placeholder(tf.float32, shape=[None, self._stateDimension])
         self._actions = tf.placeholder(tf.float32, shape=[None, self._actionNumber])
-        self._currentState_CNNoutput = self._model.actionValue_Q(self._states)
-
+        self._currentState_CNNoutput = self._model.actionValue_Q(self._states, reuse=False)
+        self._nextState_CNNoutput = self._model2.actionValue_Q(self._states, reuse=True)
         #tensor flow session
         self._session = tf.Session()
         self._session.run(tf.global_variables_initializer())
@@ -94,6 +102,7 @@ class agent_Enviroment(object):
 
         #optimizer
         self._optimizer = tf.train.GradientDescentOptimizer(learning_rate=LEARNING_RATE).minimize(self._loss)
+        # self._optimizer = tf.train.AdagradOptimizer(learning_rate=LEARNING_RATE).minimize(self._loss)
 
         ops = [self._loss, self._optimizer]
         l, _ = self._session.run(ops, feed_dict={
@@ -121,13 +130,13 @@ class agent_Enviroment(object):
 
     def getCNNoutput(self, state):
         #return actionValueQ wrt a state
-        _value_Q = self._session.run(self._currentState_CNNoutput,feed_dict={self._states: np.array([state])})
+        _value_Q = self._session.run(self._nextState_CNNoutput,feed_dict={self._states: np.array([state])})
         return _value_Q
 
 
 def dqn(): #Deep Q-learning with Experience Replay
     nr_collectedData = 0 #counting how many data was collected
-    env = gym.make('Deep_Q_Learning-v0') #Cartpole environment
+    env = gym.make('CartPole-v0') #Cartpole environment
     # make new agent, init memory D and action-value Q
     agent = agent_Enviroment(env, env.action_space.n, env.observation_space.shape[0], MINI_BATCH_SIZE)
     EPSILON = 1.0 #take action randomly in the beginning to collect data
@@ -137,6 +146,7 @@ def dqn(): #Deep Q-learning with Experience Replay
         # print "episode:", episode
         for step in range(NR_MAXSTEP):
             action = agent.takeAction(state,EPSILON) #greedy epsilon
+            # print action
             nextState , reward, done = agent.executeAction(action) #execute action, observe reward and new state
             agent.storeTransition(state, action, reward, nextState, done) #store transition in D
             nr_collectedData += 1
@@ -153,6 +163,7 @@ def dqn(): #Deep Q-learning with Experience Replay
                     else: #for non-terminal
                         targetQ[i] = rewards[i] + DISCOUNT * np.max(agent.getCNNoutput(nextStates[i]))
                 #perform gradient descent step to loss function
+                # for i in range(MINI_BATCH_SIZE):
                 agent.computeLoss(states, actions, targetQ)
             else:
                 print "collected: ", nr_collectedData
